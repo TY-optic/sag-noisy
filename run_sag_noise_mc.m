@@ -1,4 +1,3 @@
-
 function summaryTbl = run_sag_noise_mc(cfg)
 %RUN_SAG_NOISE_MC
 % Sag-based 噪声 Monte Carlo 统计（含 oracle / registration-only 分离）
@@ -372,9 +371,13 @@ function cfg = apply_step1_defaults(cfg)
     if ~isfield(s1, 'thetaSearchDeg') || isempty(s1.thetaSearchDeg)
         s1.thetaSearchDeg = -4.0 : 0.05 : 4.0;
     end
+    
+    % === 修复 2：提高边缘重叠检测的下限像素面积 ===
     if ~isfield(s1, 'minOverlapPix') || isempty(s1.minOverlapPix)
-        s1.minOverlapPix = 1200;
+        s1.minOverlapPix = 3500; % 之前是 1200，增大以抑制边缘虚假峰值
     end
+    % ==============================================
+
     if ~isfield(s1, 'doFineRefine') || isempty(s1.doFineRefine)
         s1.doFineRefine = true;
     end
@@ -718,8 +721,10 @@ function coarse = coarse_search_sag_se2(A, MA, B, MB, XA, YA, XB, YB, params)
         [scoreMax, idxMax] = max(scoreMap(:));
         [iy, ix] = ind2sub(size(scoreMap), idxMax);
 
-        txPix = ix - size(scoreMap,2);
-        tyPix = iy - size(scoreMap,1);
+        % === 修复 1：减去模板 Bw0 的尺寸，而不是相关结果 scoreMap 的尺寸 ===
+        txPix = ix - size(Bw0, 2);
+        tyPix = iy - size(Bw0, 1);
+        % =====================================================================
 
         tx = txPix * ds;
         ty = tyPix * ds;
@@ -814,6 +819,14 @@ function [scoreMap, overlapMap] = masked_ncc_full_integer(A, MA, B, MB, minOverl
 
     scoreMap = num ./ sqrt(max(denA, 0) .* max(denB, 0));
     scoreMap(overlapMap < minOverlap) = NaN;
+    
+    % === 修复 3: 加入重叠面积惩罚项，抑制边缘假峰值 ===
+    maxOv = max(overlapMap(:));
+    if maxOv > 0
+        penalty = (overlapMap ./ maxOv) .^ 0.25; 
+        scoreMap = scoreMap .* penalty;
+    end
+    % ==================================================
 end
 
 function [score, overlapMask] = masked_ncc_direct(A, MA, B, MB, XA, YA, XB, YB, theta, tx, ty, minOverlap, maskInterpThresh)
@@ -1130,7 +1143,7 @@ function deg = rotm_geodesic_deg(R1, R2)
     deg = rad2deg(acos(val));
 end
 
-function [fusedMap, errMap, unionMask, stats, ZAmap, ZBmap, overlapMaskMap, innerMask] = ...
+function [fusedMap, errMap, unionMask, stats_alg, ZAmap, ZBmap, overlapMaskMap, innerMask] = ...
     fuse_and_evaluate_surface_pair(data, reg, cfg, sourceMode)
 
     switch lower(sourceMode)
@@ -1191,23 +1204,23 @@ function [fusedMap, errMap, unionMask, stats, ZAmap, ZBmap, overlapMaskMap, inne
     ev = errMap(unionMask);
     ev = ev(isfinite(ev));
 
-    stats = struct();
-    stats.fusedRMSE = safe_rmse(ev);
-    stats.fusedMAE  = safe_mae(ev);
-    stats.fusedPV   = safe_pv(ev);
-    stats.fusedSTD  = safe_std(ev);
-    stats.robustPV995 = safe_robust_pv995(ev);
+    stats_alg = struct();
+    stats_alg.fusedRMSE = safe_rmse(ev);
+    stats_alg.fusedMAE  = safe_mae(ev);
+    stats_alg.fusedPV   = safe_pv(ev);
+    stats_alg.fusedSTD  = safe_std(ev);
+    stats_alg.robustPV995 = safe_robust_pv995(ev);
 
     ovErr = errMap(overlapMask);
     ovErr = ovErr(isfinite(ovErr));
-    stats.overlapRMSE = safe_rmse(ovErr);
-    stats.overlapMAE  = safe_mae(ovErr);
-    stats.overlapPV   = safe_pv(ovErr);
+    stats_alg.overlapRMSE = safe_rmse(ovErr);
+    stats_alg.overlapMAE  = safe_mae(ovErr);
+    stats_alg.overlapPV   = safe_pv(ovErr);
 
     innerMask = erode_mask_disk(unionMask, cfg.eval.stats.innerErodeRadius);
     innerErr = errMap(innerMask);
     innerErr = innerErr(isfinite(innerErr));
-    stats.innerRMSE = safe_rmse(innerErr);
+    stats_alg.innerRMSE = safe_rmse(innerErr);
 
     overlapMaskMap = overlapMask;
 end
